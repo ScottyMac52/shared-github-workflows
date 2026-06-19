@@ -44,62 +44,70 @@ flowchart TD
 ## Stub 
 
 ```yaml
-name: Build and Release
+name: CI / Build / Release
 
 on:
+  # 1. Every push to any branch → CI only (tests + coverage)
   push:
-    branches: [ main ]
-    tags:
-      - 'v*.*.*.*'
+    branches:
+      - '**'
     paths-ignore:
       - '.github/workflows/**'
-  pull_request:          # Optional: for PR quality gates
-    branches: [ main ]
+
+  # 2. Pull requests into main → full build but no release
+  pull_request:
+    branches:
+      - main
+
+  # 3. Tag push → everything including release
+  push:
+    tags:
+      - 'v*.*.*.*'
+
   workflow_dispatch:
-    inputs:
-      dotnet_version:
-        description: '.NET version'
-        required: false
-        default: '10.0.x'
-        type: string
-      enable_installer:
-        description: 'Build Setup.exe?'
-        required: false
-        default: false
-        type: boolean
-      run_tests:
-        description: 'Run unit tests?'
-        required: false
-        default: true
-        type: boolean
-      run_coverage:
-        description: 'Run code coverage?'
-        required: false
-        default: true
-        type: boolean
-      run_build_release:
-        description: 'Build + create release artifacts?'
-        required: false
-        default: true
-        type: boolean
-      ci_mode:
-        description: 'CI-only mode (tests + coverage only, no build/release)'
-        required: false
-        default: false
-        type: boolean
-      # other inputs...
 
 jobs:
-  call-reusable:
+  ci:
+    name: CI (Tests + Coverage)
     uses: ScottyMac52/shared-github-workflows/.github/workflows/reusable-build-and-release.yml@main
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
     with:
-      dotnet_version: ${{ inputs.dotnet_version || '10.0.x' }}
-      enable_installer: ${{ inputs.enable_installer || false }}
-      run_tests: ${{ inputs.run_tests || true }}
-      run_coverage: ${{ inputs.run_coverage || true }}
-      run_build_release: ${{ inputs.run_build_release || true }}
-      ci_mode: ${{ inputs.ci_mode || false }}
-      # ... other inputs
+      dotnet_version: '10.0.x'
+      run_tests: true
+      run_coverage: true
+      run_build_release: false
+      ci_mode: true
+      create_release: false
+    secrets:
+      inherit: true
+
+  build-on-main:
+    name: Build on PR / Merge to Main
+    uses: ScottyMac52/shared-github-workflows/.github/workflows/reusable-build-and-release.yml@main
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    with:
+      dotnet_version: '10.0.x'
+      run_tests: true
+      run_coverage: true
+      run_build_release: true
+      ci_mode: false
+      create_release: false          # ← No release on main merges
+      enable_installer: false
+    secrets:
+      inherit: true
+
+  release:
+    name: Full Build + Release (Tag only)
+    uses: ScottyMac52/shared-github-workflows/.github/workflows/reusable-build-and-release.yml@main
+    if: startsWith(github.ref, 'refs/tags/')
+    with:
+      dotnet_version: '10.0.x'
+      run_tests: true
+      run_coverage: true
+      run_build_release: true
+      ci_mode: false
+      create_release: true
+      enable_installer: false        # Change to true if you want Setup.exe
     secrets:
       inherit: true
 ```
