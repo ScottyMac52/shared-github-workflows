@@ -561,14 +561,22 @@ jobs:
           if (-not (Test-Path $isccPath)) {
               throw "ISCC.exe not found at expected location after choco install."
           }
-
+          
+          $publishDir = (Resolve-Path "./publish").Path
+          
+          if (-not (Test-Path $publishDir)) {
+              throw "Publish directory was not found at $publishDir"
+          }
+          
+          Write-Host "PublishDir resolved to: $publishDir"
+          
           $isccArgs = @(
-            "/DPublishDir=./publish",
+            "/DPublishDir=$publishDir",
             $issPath
           )
-
+          
           & $isccPath @isccArgs
-
+          
           if ($LASTEXITCODE -ne 0) {
               Write-Error "ISCC.exe failed with exit code $LASTEXITCODE"
               exit 1
