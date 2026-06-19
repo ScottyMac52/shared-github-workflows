@@ -517,7 +517,7 @@ jobs:
                   "DefaultDirName={autopf}\{#AppName}",
                   "DefaultGroupName={#AppName}",
                   "OutputDir=.",
-                  "OutputBaseFilename={#AppName}-Setup-v{#AppVersion}",
+                  "OutputBaseFilename=setup",
                   "Compression=lzma",
                   "SolidCompression=yes",
                   "PrivilegesRequired=lowest",
@@ -553,8 +553,13 @@ jobs:
           $content = $content -replace '(?m)^#define AppPublisher ".*"', "#define AppPublisher `"$appPublisher`""
           $content = $content -replace '(?m)^#define AppVersion ".*"', "#define AppVersion `"$appVersion`""
 
-          Set-Content -Path $issPath -Value $content -NoNewline
+          if ($content -match '(?m)^OutputBaseFilename=.*$') {
+              $content = $content -replace '(?m)^OutputBaseFilename=.*$', 'OutputBaseFilename=setup'
+          } else {
+              $content = $content -replace '(?m)^OutputDir=.*$', "OutputDir=.`r`nOutputBaseFilename=setup"
+          }
 
+          Set-Content -Path $issPath -Value $content -NoNewline
           Write-Host "Version/publisher/name injected."
 
           $isccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
@@ -593,13 +598,14 @@ jobs:
           $setupDir = "_setup"
           New-Item -ItemType Directory -Force -Path $setupDir | Out-Null
 
-          $found = Get-ChildItem -Path . -Recurse -Filter "*-Setup-*.exe" | Select-Object -First 1
+          $found = Get-ChildItem -Path . -Recurse -Filter "setup.exe" |
+              Where-Object { $_.FullName -notmatch '\\publish\\' } |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 1
+          
           if ($found) {
-              $version = "${{ steps.versioning.outputs.VERSION }}"
-              $appName = "${{ needs.test.outputs.app_name }}"
-              $target = Join-Path $setupDir "$appName-Setup-v$version.exe"
+              $target = Join-Path $setupDir "setup.exe"
               Move-Item -Path $found.FullName -Destination $target -Force
-
               Write-Host "✅ Setup.exe staged to $target"
 
               try {
@@ -612,7 +618,7 @@ jobs:
                   Write-Host "Could not read version info from Setup.exe: $_"
               }
           } else {
-              Write-Warning "No *-Setup-*.exe found after ISCC. Check your installer.iss OutputBaseFilename setting."
+              Write-Warning "No setup.exe found after ISCC. Check your installer.iss OutputBaseFilename setting."
               if (Test-Path "installer") {
                   Write-Host "installer dir contents:"
                   Get-ChildItem installer | Format-Table Name, Length -AutoSize
