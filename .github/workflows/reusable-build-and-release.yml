@@ -62,7 +62,6 @@ on:
         required: false
         default: false
         type: boolean
-
 jobs:
   test:
     name: Run Unit Tests & Coverage
