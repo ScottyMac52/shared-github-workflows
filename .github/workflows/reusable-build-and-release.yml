@@ -340,9 +340,6 @@ jobs:
     runs-on: windows-latest
     needs: test
     if: ${{ inputs.run_build_release && !inputs.ci_mode }}
-    permissions:
-      contents: write
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -662,4 +659,5 @@ jobs:
           prerelease: false
           make_latest: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+
