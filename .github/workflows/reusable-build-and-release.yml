@@ -62,6 +62,9 @@ on:
         required: false
         default: false
         type: boolean
+    secrets:
+      GITHUB_TOKEN:
+        required: false
 
 jobs:
   test:
