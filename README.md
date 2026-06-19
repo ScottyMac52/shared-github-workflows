@@ -3,6 +3,7 @@
 ## Reusable Workflow Flowchart
 
 ```mermaid
+%%{init: {'theme': 'dark'}}%%
 flowchart TD
     A[Trigger: Push Tag / PR / Dispatch] --> B{ci_mode?}
     B -->|Yes| C[Run Tests + Coverage Only]
@@ -35,9 +36,9 @@ flowchart TD
     W -->|Yes| X[Create GitHub Release\n+ Attach ZIP + Setup.exe]
     W -->|No| Y[End]
     X --> Y
-    style C fill:#ffcc00
-    style M fill:#ffcc00
-    style Y fill:#90EE90
+    style C fill:#ffcc00,color:#000
+    style M fill:#ffcc00,color:#000
+    style Y fill:#90EE90,color:#000
 ```
 
 ## Stub 
