@@ -1,6 +1,6 @@
 # Shared Workflows for all repos
 
-## Workflow
+## Reusable Workflow Flowchart
 
 ```mermaid
 flowchart TD
@@ -21,6 +21,7 @@ flowchart TD
     L --> N
     E --> N
     N -->|Yes| O[Determine Version]
+    N -->|No| Y[End]
     O --> P{build_mode?}
     P -->|Executable| Q[dotnet publish Single EXE]
     P -->|Library| R[Build + Copy All Non-Test Projects]
@@ -36,6 +37,7 @@ flowchart TD
     X --> Y
     style C fill:#ffcc00
     style M fill:#ffcc00
+    style Y fill:#90EE90
 ```
 
 ## Stub 
@@ -95,3 +97,7 @@ jobs:
       create_release: ${{ inputs.create_release }}
     secrets:
       inherit: true
+```
+
+## Samples
+
