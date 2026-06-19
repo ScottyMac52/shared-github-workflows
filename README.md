@@ -47,10 +47,13 @@ name: Build and Release
 
 on:
   push:
+    branches: [ main ]
     tags:
       - 'v*.*.*.*'
     paths-ignore:
       - '.github/workflows/**'
+  pull_request:          # Optional: for PR quality gates
+    branches: [ main ]
   workflow_dispatch:
     inputs:
       dotnet_version:
@@ -59,42 +62,43 @@ on:
         default: '10.0.x'
         type: string
       enable_installer:
-        description: 'Build Setup.exe installer?'
+        description: 'Build Setup.exe?'
         required: false
         default: false
         type: boolean
-      installer_iss_path:
-        description: 'Path to installer.iss'
+      run_tests:
+        description: 'Run unit tests?'
         required: false
-        default: 'installer/installer.iss'
-        type: string
-      app_publisher:
-        description: 'Publisher name'
+        default: true
+        type: boolean
+      run_coverage:
+        description: 'Run code coverage?'
         required: false
-        default: 'Vyper Industries'
-        type: string
-      skip_projects:
-        description: 'Projects to skip (comma-separated)'
+        default: true
+        type: boolean
+      run_build_release:
+        description: 'Build + create release artifacts?'
         required: false
-        default: 'LuaParser'
-        type: string
-      create_release:
-        description: 'Create GitHub Release?'
+        default: true
+        type: boolean
+      ci_mode:
+        description: 'CI-only mode (tests + coverage only, no build/release)'
         required: false
         default: false
         type: boolean
+      # other inputs...
 
 jobs:
   call-reusable:
-    name: Build via Shared Workflow
     uses: ScottyMac52/shared-github-workflows/.github/workflows/reusable-build-and-release.yml@main
     with:
-      dotnet_version: ${{ inputs.dotnet_version }}
-      enable_installer: ${{ inputs.enable_installer }}
-      installer_iss_path: ${{ inputs.installer_iss_path }}
-      app_publisher: ${{ inputs.app_publisher }}
-      skip_projects: ${{ inputs.skip_projects }}
-      create_release: ${{ inputs.create_release }}
+      dotnet_version: ${{ inputs.dotnet_version || '10.0.x' }}
+      enable_installer: ${{ inputs.enable_installer || false }}
+      run_tests: ${{ inputs.run_tests || true }}
+      run_coverage: ${{ inputs.run_coverage || true }}
+      run_build_release: ${{ inputs.run_build_release || true }}
+      ci_mode: ${{ inputs.ci_mode || false }}
+      # ... other inputs
     secrets:
       inherit: true
 ```
