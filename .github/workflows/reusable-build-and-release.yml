@@ -476,40 +476,42 @@ jobs:
 
               $guid = [guid]::NewGuid().ToString().ToUpper()
 
-              $issContent = @"
-#define AppName "$appName"
-#define AppVersion "$appVersion"
-#define AppPublisher "$appPublisher"
-#define AppExeName "$appExeName"
+              # Build .iss content safely to avoid YAML parsing issues
+              $issLines = @(
+                  "#define AppName `"$appName`"",
+                  "#define AppVersion `"$appVersion`"",
+                  "#define AppPublisher `"$appPublisher`"",
+                  "#define AppExeName `"$appExeName`"",
+                  "",
+                  "[Setup]",
+                  "AppId={{$guid}}",
+                  "AppName={#AppName}",
+                  "AppVersion={#AppVersion}",
+                  "AppPublisher={#AppPublisher}",
+                  "DefaultDirName={autopf}\{#AppName}",
+                  "DefaultGroupName={#AppName}",
+                  "OutputDir=.",
+                  "OutputBaseFilename={#AppName}-Setup-v{#AppVersion}",
+                  "Compression=lzma",
+                  "SolidCompression=yes",
+                  "PrivilegesRequired=lowest",
+                  "ArchitecturesInstallIn64BitMode=x64",
+                  "",
+                  "[Files]",
+                  "Source: `"{#PublishDir}\*`"; DestDir: `"{app}`"; Flags: ignoreversion recursesubdirs createallsubdirs",
+                  "",
+                  "[Icons]",
+                  "Name: `"{group}\{#AppName}`"; Filename: `"{app}\{#AppExeName}`"",
+                  "Name: `"{commondesktop}\{#AppName}`"; Filename: `"{app}\{#AppExeName}`"; Tasks: desktopicon",
+                  "",
+                  "[Tasks]",
+                  "Name: `"desktopicon`"; Description: `"{cm:CreateDesktopIcon}`"; GroupDescription: `"{cm:AdditionalIcons}`"; Flags: unchecked",
+                  "",
+                  "[Run]",
+                  "Filename: `"{app}\{#AppExeName}`"; Description: `"{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}`"; Flags: nowait postinstall skipifsilent"
+              )
 
-[Setup]
-AppId={{$guid}}
-AppName={#AppName}
-AppVersion={#AppVersion}
-AppPublisher={#AppPublisher}
-DefaultDirName={autopf}\{#AppName}
-DefaultGroupName={#AppName}
-OutputDir=.
-OutputBaseFilename={#AppName}-Setup-v{#AppVersion}
-Compression=lzma
-SolidCompression=yes
-PrivilegesRequired=lowest
-ArchitecturesInstallIn64BitMode=x64
-
-[Files]
-Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-
-[Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
-Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
-
-[Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-
-[Run]
-Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
-"@
-
+              $issContent = $issLines -join "`r`n"
               Set-Content -Path $issPath -Value $issContent -NoNewline
               Write-Host "✅ Basic installer.iss auto-generated with GUID $guid"
           }
