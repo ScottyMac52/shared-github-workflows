@@ -33,6 +33,30 @@ on:
         default: 'LuaParser'
         type: string
 
+      run_tests:
+        description: 'Run unit tests?'
+        required: false
+        default: true
+        type: boolean
+
+      run_coverage:
+        description: 'Generate code coverage (only if tests run)'
+        required: false
+        default: true
+        type: boolean
+
+      run_build_release:
+        description: 'Perform build and release steps?'
+        required: false
+        default: true
+        type: boolean
+
+      ci_mode:
+        description: 'CI-only mode: run only tests/coverage (no build or release)'
+        required: false
+        default: false
+        type: boolean
+
       create_release:
         description: 'Create/update GitHub Release (and attach artifacts). On tag push this is forced true internally.'
         required: false
@@ -43,6 +67,7 @@ jobs:
   test:
     name: Run Unit Tests & Coverage
     runs-on: windows-latest
+    if: ${{ inputs.run_tests || inputs.ci_mode }}
 
     outputs:
       solution_file: ${{ steps.discover.outputs.SOLUTION_FILE }}
@@ -214,6 +239,7 @@ jobs:
           dotnet build "${{ steps.discover.outputs.SOLUTION_FILE }}" --no-restore -c Release
 
       - name: Run Tests with Coverage
+        if: ${{ inputs.run_tests }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -265,11 +291,13 @@ jobs:
           }
 
       - name: Install ReportGenerator
+        if: ${{ inputs.run_coverage }}
         shell: pwsh
         run: |
           dotnet tool install --global dotnet-reportgenerator-globaltool
 
       - name: Generate Coverage Report
+        if: ${{ inputs.run_coverage }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -301,6 +329,7 @@ jobs:
           "" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload Full Coverage Report
+        if: ${{ inputs.run_coverage }}
         uses: actions/upload-artifact@v4
         with:
           name: code-coverage-report
@@ -311,6 +340,7 @@ jobs:
     name: Build & Release
     runs-on: windows-latest
     needs: test
+    if: ${{ inputs.run_build_release && !inputs.ci_mode }}
     permissions:
       contents: write
 
