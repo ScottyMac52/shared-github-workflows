@@ -1,0 +1,634 @@
+name: Reusable - Build, Test, Coverage + Release (Single EXE or Library + optional Inno Setup)
+
+on:
+  workflow_call:
+    inputs:
+      dotnet_version:
+        description: '.NET SDK version (e.g. 8.0.x, 9.0.x, 10.0.x)'
+        required: false
+        default: '10.0.x'
+        type: string
+
+      enable_installer:
+        description: 'Build Inno Setup installer package (only valid for Executable projects that have installer/installer.iss)'
+        required: false
+        default: false
+        type: boolean
+
+      installer_iss_path:
+        description: 'Relative path to your Inno Setup script'
+        required: false
+        default: 'installer/installer.iss'
+        type: string
+
+      app_publisher:
+        description: 'Publisher/company name injected into the .iss (overwrites #define AppPublisher)'
+        required: false
+        default: 'Vyper Industries'
+        type: string
+
+      skip_projects:
+        description: 'Comma-separated list of project BaseNames to completely ignore for app detection, tests, and library packaging (e.g. LuaParser,SomeOther)'
+        required: false
+        default: 'LuaParser'
+        type: string
+
+      create_release:
+        description: 'Create/update GitHub Release (and attach artifacts). On tag push this is forced true internally.'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  test:
+    name: Run Unit Tests & Coverage
+    runs-on: windows-latest
+
+    outputs:
+      solution_file: ${{ steps.discover.outputs.SOLUTION_FILE }}
+      app_project: ${{ steps.discover.outputs.APP_PROJECT }}
+      app_name: ${{ steps.discover.outputs.APP_NAME }}
+      artifact_base_name: ${{ steps.discover.outputs.ARTIFACT_BASE_NAME }}
+      build_mode: ${{ steps.discover.outputs.BUILD_MODE }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Discover Solution and Projects
+        id: discover
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # === SKIP LIST (from input, defaults to LuaParser) ===
+          $skipInput = "${{ inputs.skip_projects }}"
+          $skipProjects = @()
+          if ($skipInput) {
+              $skipProjects = $skipInput.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+          }
+          Write-Host "Skip list: $($skipProjects -join ', ')"
+          # =======================================================
+
+          $solutions = @(Get-ChildItem -Path . -Recurse -File |
+            Where-Object {
+              ($_.Extension -eq '.sln' -or $_.Extension -eq '.slnx') -and
+              $_.FullName -notmatch '\\bin\\' -and
+              $_.FullName -notmatch '\\obj\\'
+            })
+          
+          if ($solutions.Count -eq 0) {
+            throw "No .sln or .slnx file was found."
+          }
+          
+          if ($solutions.Count -gt 1) {
+            Write-Host "Multiple solution files were found:"
+            foreach ($solution in $solutions) {
+              Write-Host "  $($solution.FullName)"
+            }
+            throw "Automatic solution detection is ambiguous."
+          }
+          $solutionFile = $solutions[0]
+
+          $projects = @(Get-ChildItem -Path . -Recurse -Filter *.csproj -File |
+            Where-Object {
+              $_.FullName -notmatch '\\bin\\' -and
+              $_.FullName -notmatch '\\obj\\'
+            })
+
+          if ($projects.Count -eq 0) {
+            throw "No .csproj files were found."
+          }
+
+          Write-Host "Selected solution:"
+          Write-Host "  $($solutionFile.FullName)"
+          Write-Host ""
+
+          Write-Host "Discovered project files:"
+          foreach ($project in $projects) {
+            Write-Host "  $($project.FullName)"
+          }
+
+          $projectInfo = foreach ($project in $projects) {
+            $content = Get-Content $project.FullName -Raw
+
+            $isTestProject =
+              $content -match '<IsTestProject>\s*true\s*</IsTestProject>' -or
+              $content -match 'Microsoft\.NET\.Test\.Sdk' -or
+              $project.BaseName -match '(?i)(test|tests)$'
+
+            $isExecutableProject =
+              $content -match '<OutputType>\s*Exe\s*</OutputType>' -or
+              $content -match '<OutputType>\s*WinExe\s*</OutputType>'
+
+            [PSCustomObject]@{
+              File = $project
+              RelativePath = Resolve-Path $project.FullName -Relative
+              BaseName = $project.BaseName
+              IsTestProject = $isTestProject
+              IsExecutableProject = $isExecutableProject
+            }
+          }
+
+          $appProjects = @($projectInfo | Where-Object { 
+              -not $_.IsTestProject -and 
+              $_.IsExecutableProject -and 
+              $skipProjects -notcontains $_.BaseName 
+          })
+
+          if ($appProjects.Count -gt 1) {
+            Write-Host ""
+            Write-Host "Multiple executable app projects were found:"
+            foreach ($appProject in $appProjects) {
+              Write-Host "  $($appProject.RelativePath)"
+            }
+            throw "Automatic app project detection is ambiguous."
+          }
+
+          $solutionRelativePath = Resolve-Path $solutionFile.FullName -Relative
+          $solutionRelativePath = $solutionRelativePath.TrimStart('.\')
+
+          if ($appProjects.Count -eq 1) {
+            $buildMode = "Executable"
+            $appProjectPath = $appProjects[0].RelativePath.TrimStart('.\')
+            $appName = $appProjects[0].BaseName
+            $artifactBaseName = $appName -replace '[^a-zA-Z0-9._-]', '_'
+
+            Write-Host ""
+            Write-Host "Selected app project:"
+            Write-Host "  $appProjectPath"
+          } else {
+            $nonTestProjects = @($projectInfo | Where-Object {
+                -not $_.IsTestProject -and
+                $skipProjects -notcontains $_.BaseName
+            })
+
+            if ($nonTestProjects.Count -eq 0) {
+              throw "No non-test projects were found."
+            }
+
+            $buildMode = "Library"
+            $appProjectPath = ""
+            $appName = $solutionFile.BaseName
+            $artifactBaseName = $appName -replace '[^a-zA-Z0-9._-]', '_'
+
+            Write-Host ""
+            Write-Host "No executable app project was found. Library build mode selected."
+            Write-Host "Non-test projects included in the library artifact:"
+            foreach ($nonTestProject in $nonTestProjects) {
+              Write-Host "  $($nonTestProject.RelativePath)"
+            }
+          }
+
+          Write-Host ""
+          Write-Host "Build mode:"
+          Write-Host "  $buildMode"
+          Write-Host ""
+          Write-Host "Application name:"
+          Write-Host "  $appName"
+          Write-Host ""
+          Write-Host "Artifact base name:"
+          Write-Host "  $artifactBaseName"
+
+          "SOLUTION_FILE=$solutionRelativePath" >> $env:GITHUB_OUTPUT
+          "APP_PROJECT=$appProjectPath" >> $env:GITHUB_OUTPUT
+          "APP_NAME=$appName" >> $env:GITHUB_OUTPUT
+          "ARTIFACT_BASE_NAME=$artifactBaseName" >> $env:GITHUB_OUTPUT
+          "BUILD_MODE=$buildMode" >> $env:GITHUB_OUTPUT
+
+      - name: Restore dependencies
+        shell: pwsh
+        run: |
+          dotnet restore "${{ steps.discover.outputs.SOLUTION_FILE }}"
+
+      - name: Build
+        shell: pwsh
+        run: |
+          dotnet build "${{ steps.discover.outputs.SOLUTION_FILE }}" --no-restore -c Release
+
+      - name: Run Tests with Coverage
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $skipInput = "${{ inputs.skip_projects }}"
+          $skipProjects = @()
+          if ($skipInput) {
+              $skipProjects = $skipInput.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+          }
+
+          $testProjects = @(Get-ChildItem -Path . -Recurse -Filter *.csproj -File |
+            Where-Object {
+              $_.FullName -notmatch '\\bin\\' -and
+              $_.FullName -notmatch '\\obj\\'
+            } |
+            ForEach-Object {
+              $content = Get-Content $_.FullName -Raw
+
+              if (
+                $content -match '<IsTestProject>\s*true\s*</IsTestProject>' -or
+                $content -match 'Microsoft\.NET\.Test\.Sdk' -or
+                $_.BaseName -match '(?i)(test|tests)$'
+              ) {
+                $_
+              }
+            })
+
+          $testProjects = @($testProjects | Where-Object { $skipProjects -notcontains $_.BaseName })
+
+          if ($testProjects.Count -eq 0) {
+            Write-Warning "No test projects were found. Skipping test execution and coverage generation."
+            New-Item -ItemType Directory -Path ./coverage/report -Force | Out-Null
+            "No test projects were found." | Out-File ./coverage/report/SummaryGithub.md
+            exit 0
+          }
+
+          foreach ($testProject in $testProjects) {
+            $testProjectPath = Resolve-Path $testProject.FullName -Relative
+            $testProjectPath = $testProjectPath.TrimStart('.\')
+
+            Write-Host "Running tests for $testProjectPath"
+
+            dotnet test "$testProjectPath" `
+              --no-build `
+              -c Release `
+              --collect:"XPlat Code Coverage" `
+              --results-directory ./coverage `
+              --logger "console;verbosity=normal"
+          }
+
+      - name: Install ReportGenerator
+        shell: pwsh
+        run: |
+          dotnet tool install --global dotnet-reportgenerator-globaltool
+
+      - name: Generate Coverage Report
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $coverageFiles = @(Get-ChildItem -Path ./coverage -Recurse -Filter coverage.cobertura.xml -File -ErrorAction SilentlyContinue)
+
+          if ($coverageFiles.Count -eq 0) {
+            Write-Warning "No coverage.cobertura.xml files were found. Creating placeholder summary."
+            New-Item -ItemType Directory -Path ./coverage/report -Force | Out-Null
+            "No coverage files were generated." | Out-File ./coverage/report/SummaryGithub.md
+            exit 0
+          }
+
+          reportgenerator -reports:./coverage/**/coverage.cobertura.xml `
+                          -targetdir:./coverage/report `
+                          -reporttypes:"Html;MarkdownSummaryGithub"
+
+      - name: Publish Coverage Summary to Job Log
+        shell: pwsh
+        run: |
+          "## 📊 Code Coverage Report" >> $env:GITHUB_STEP_SUMMARY
+
+          if (Test-Path ./coverage/report/SummaryGithub.md) {
+            Get-Content ./coverage/report/SummaryGithub.md >> $env:GITHUB_STEP_SUMMARY
+          } else {
+            "No coverage summary was generated." >> $env:GITHUB_STEP_SUMMARY
+          }
+
+          "" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload Full Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-coverage-report
+          path: ./coverage/report
+          retention-days: 30
+
+  release:
+    name: Build & Release
+    runs-on: windows-latest
+    needs: test
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Determine Version
+        id: versioning
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $isTagPush = ("${{ github.event_name }}" -eq "push") -and ("${{ github.ref }}" -like "refs/tags/*")
+          $isDispatch = "${{ github.event_name }}" -eq "workflow_dispatch"
+
+          if ($isTagPush) {
+              $tagName = "${{ github.ref_name }}"
+              Write-Host "Tag push detected: $tagName"
+          } else {
+              # Non-tag event (main push, PR, dispatch, etc.) → use latest tag + run number for dev builds
+              git fetch --tags --force 2>$null | Out-Null
+
+              $latestTag = git tag --list "v[0-9]*.[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | Select-Object -First 1
+
+              if ($latestTag) {
+                  $baseVer = $latestTag.TrimStart('v')
+                  $parts = $baseVer -split '\.'
+                  while ($parts.Count -lt 4) { $parts += '0' }
+                  if ($parts.Count -gt 4) { $parts = $parts[0..3] }
+
+                  $major = [int]$parts[0]
+                  $minor = [int]$parts[1]
+                  $patch = [int]$parts[2]
+                  $buildNum = [int]"${{ github.run_number }}"
+
+                  $asmVer = "$major.$minor.$patch.$buildNum"
+                  $fileVer = "$major.$minor.$patch.$buildNum"
+
+                  "VERSION=$asmVer" >> $env:GITHUB_OUTPUT
+                  "FILE_VERSION=$fileVer" >> $env:GITHUB_OUTPUT
+
+                  Write-Host "Non-tag build. Using latest tag + run_number: $asmVer"
+                  exit 0
+              } else {
+                  # No tags at all yet
+                  $fallback = "0.0.0.${{ github.run_number }}"
+                  "VERSION=$fallback" >> $env:GITHUB_OUTPUT
+                  "FILE_VERSION=$fallback" >> $env:GITHUB_OUTPUT
+                  Write-Host "No tags found. Using fallback version: $fallback"
+                  exit 0
+              }
+          }
+
+          # Only reach here for real tag pushes
+          if ($tagName -notmatch '^v\d+\.\d+\.\d+\.\d+$') {
+              throw "Invalid version tag '$tagName'. Expected format: vX.X.X.X"
+          }
+
+          $version = $tagName.TrimStart('v')
+
+          "VERSION=$version" >> $env:GITHUB_OUTPUT
+          "FILE_VERSION=$version" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Using version tag: $tagName"
+          Write-Host "Assembly/File Version: $version"
+
+      - name: Dotnet Publish (Single EXE)
+        if: ${{ needs.test.outputs.build_mode == 'Executable' }}
+        shell: pwsh
+        run: |
+          dotnet publish "${{ needs.test.outputs.app_project }}" `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:Version=${{ steps.versioning.outputs.VERSION }} `
+            -p:FileVersion=${{ steps.versioning.outputs.FILE_VERSION }} `
+            -p:AssemblyVersion=${{ steps.versioning.outputs.VERSION }} `
+            -o ./publish
+
+      - name: Dotnet Build Library Artifacts
+        if: ${{ needs.test.outputs.build_mode == 'Library' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $skipInput = "${{ inputs.skip_projects }}"
+          $skipProjects = @()
+          if ($skipInput) {
+              $skipProjects = $skipInput.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+          }
+
+          dotnet restore "${{ needs.test.outputs.solution_file }}"
+
+          dotnet build "${{ needs.test.outputs.solution_file }}" `
+            --no-restore `
+            -c Release `
+            -p:Version=${{ steps.versioning.outputs.VERSION }} `
+            -p:FileVersion=${{ steps.versioning.outputs.FILE_VERSION }} `
+            -p:AssemblyVersion=${{ steps.versioning.outputs.VERSION }}
+
+          New-Item -ItemType Directory -Path ./publish -Force | Out-Null
+
+          $projects = @(Get-ChildItem -Path . -Recurse -Filter *.csproj -File |
+            Where-Object {
+              $_.FullName -notmatch '\\bin\\' -and
+              $_.FullName -notmatch '\\obj\\'
+            })
+
+          foreach ($project in $projects) {
+            $content = Get-Content $project.FullName -Raw
+
+            $isTestProject =
+              $content -match '<IsTestProject>\s*true\s*</IsTestProject>' -or
+              $content -match 'Microsoft\.NET\.Test\.Sdk' -or
+              $project.BaseName -match '(?i)(test|tests)$'
+
+            if ($isTestProject -or $skipProjects -contains $project.BaseName) {
+              continue
+            }
+
+            $releasePath = Join-Path $project.DirectoryName 'bin\Release'
+
+            if (-not (Test-Path $releasePath)) {
+              throw "Release output was not found for project '$($project.BaseName)' at '$releasePath'."
+            }
+
+            $projectPublishPath = Join-Path './publish' $project.BaseName
+            New-Item -ItemType Directory -Path $projectPublishPath -Force | Out-Null
+            Copy-Item -Path (Join-Path $releasePath '*') -Destination $projectPublishPath -Recurse -Force
+          }
+
+      - name: Build Inno Setup Installer (conditional)
+        if: ${{ inputs.enable_installer && needs.test.outputs.build_mode == 'Executable' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== Building Inno Setup installer ==="
+
+          choco install innosetup -y --no-progress
+
+          $issPath = "${{ inputs.installer_iss_path }}"
+          $appName = "${{ needs.test.outputs.app_name }}"
+          $appPublisher = "${{ inputs.app_publisher }}"
+          $appVersion = "${{ steps.versioning.outputs.VERSION }}"
+          $appExeName = "$appName.exe"
+
+          if (-not (Test-Path $issPath)) {
+              Write-Host "No existing installer script found at $issPath — auto-generating a basic one..."
+              $installerDir = Split-Path $issPath -Parent
+              if ($installerDir) {
+                  New-Item -ItemType Directory -Path $installerDir -Force | Out-Null
+              }
+
+              $guid = [guid]::NewGuid().ToString().ToUpper()
+
+              $issContent = @"
+#define AppName "$appName"
+#define AppVersion "$appVersion"
+#define AppPublisher "$appPublisher"
+#define AppExeName "$appExeName"
+
+[Setup]
+AppId={{$guid}}
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppPublisher={#AppPublisher}
+DefaultDirName={autopf}\{#AppName}
+DefaultGroupName={#AppName}
+OutputDir=.
+OutputBaseFilename={#AppName}-Setup-v{#AppVersion}
+Compression=lzma
+SolidCompression=yes
+PrivilegesRequired=lowest
+ArchitecturesInstallIn64BitMode=x64
+
+[Files]
+Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+Name: "{commondesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Run]
+Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+"@
+
+              Set-Content -Path $issPath -Value $issContent -NoNewline
+              Write-Host "✅ Basic installer.iss auto-generated with GUID $guid"
+          }
+
+          Write-Host "Injecting dynamic values into $issPath"
+          Write-Host "  AppName:      $appName"
+          Write-Host "  AppPublisher: $appPublisher"
+          Write-Host "  AppVersion:   $appVersion"
+
+          $content = Get-Content $issPath -Raw
+
+          $content = $content -replace '(?m)^#define AppName ".*"', "#define AppName `"$appName`""
+          $content = $content -replace '(?m)^#define AppPublisher ".*"', "#define AppPublisher `"$appPublisher`""
+          $content = $content -replace '(?m)^#define AppVersion ".*"', "#define AppVersion `"$appVersion`""
+
+          Set-Content -Path $issPath -Value $content -NoNewline
+
+          Write-Host "Version/publisher/name injected."
+
+          $isccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $isccPath)) {
+              throw "ISCC.exe not found at expected location after choco install."
+          }
+
+          $isccArgs = @(
+            "/DPublishDir=./publish",
+            $issPath
+          )
+
+          & $isccPath @isccArgs
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "ISCC.exe failed with exit code $LASTEXITCODE"
+              exit 1
+          }
+
+          Write-Host "✅ Inno Setup build completed."
+
+      - name: Stage Setup.exe (if built)
+        if: ${{ inputs.enable_installer && needs.test.outputs.build_mode == 'Executable' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $setupDir = "_setup"
+          New-Item -ItemType Directory -Force -Path $setupDir | Out-Null
+
+          $found = Get-ChildItem -Path . -Recurse -Filter "*-Setup-*.exe" | Select-Object -First 1
+          if ($found) {
+              $version = "${{ steps.versioning.outputs.VERSION }}"
+              $appName = "${{ needs.test.outputs.app_name }}"
+              $target = Join-Path $setupDir "$appName-Setup-v$version.exe"
+              Move-Item -Path $found.FullName -Destination $target -Force
+
+              Write-Host "✅ Setup.exe staged to $target"
+
+              try {
+                  $verInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($target)
+                  Write-Host "Embedded ProductVersion: $($verInfo.ProductVersion)"
+                  Write-Host "Embedded FileVersion:    $($verInfo.FileVersion)"
+                  Write-Host "Embedded ProductName:    $($verInfo.ProductName)"
+                  Write-Host "Embedded CompanyName:    $($verInfo.CompanyName)"
+              } catch {
+                  Write-Host "Could not read version info from Setup.exe: $_"
+              }
+          } else {
+              Write-Warning "No *-Setup-*.exe found after ISCC. Check your installer.iss OutputBaseFilename setting."
+              if (Test-Path "installer") {
+                  Write-Host "installer dir contents:"
+                  Get-ChildItem installer | Format-Table Name, Length -AutoSize
+              }
+          }
+
+      - name: Prepare Artifacts (ZIP)
+        shell: pwsh
+        run: |
+          $artifactBaseName = "${{ needs.test.outputs.artifact_base_name }}"
+          $version = "${{ steps.versioning.outputs.VERSION }}"
+          $zipFileName = "${artifactBaseName}_v${version}.zip"
+
+          Compress-Archive -Path "./publish/*" -DestinationPath $zipFileName -Force
+
+          "ZIP_FILE_NAME=$zipFileName" >> $env:GITHUB_ENV
+
+          Write-Host "Created $zipFileName"
+
+      - name: Ensure _setup directory exists (for artifact upload)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path _setup | Out-Null
+
+      - name: Upload build artifacts (always, for testing/CI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.test.outputs.artifact_base_name }}-build-v${{ steps.versioning.outputs.VERSION }}
+          path: |
+            ${{ env.ZIP_FILE_NAME }}
+            _setup/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Create or Update GitHub Release
+        if: >-
+          (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+          (github.event_name == 'workflow_dispatch' && inputs.create_release)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.versioning.outputs.VERSION }}
+          name: ${{ needs.test.outputs.app_name }} v${{ steps.versioning.outputs.VERSION }}
+          body: |
+            Automated build from commit ${{ github.sha }}
+
+            ${{ github.event.head_commit.message || 'Manual trigger via workflow dispatch' }}
+          generate_release_notes: true
+          files: |
+            ${{ env.ZIP_FILE_NAME }}
+            _setup/*.exe
+          draft: false
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
