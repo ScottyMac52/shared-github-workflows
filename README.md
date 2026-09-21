@@ -114,3 +114,22 @@ jobs:
 
 ## Samples
 
+
+## Reusable .NET CI
+
+Use `.github/workflows/reusable-dotnet-ci.yml` when a repository needs explicit project selection instead of solution discovery. The workflow supports .NET 10, formatting verification, a Linux test build, an optional Windows presentation build, and independent per-assembly coverage gates.
+
+Coverage is evaluated with Coverlet's `minimum` statistic. `line_threshold` and `branch_threshold` are separate inputs, so an assembly must satisfy both gates independently; aggregate coverage cannot hide an under-tested layer.
+
+```yaml
+jobs:
+  dotnet:
+    uses: ScottyMac52/shared-github-workflows/.github/workflows/reusable-dotnet-ci.yml@main
+    with:
+      dotnet_version: 10.0.x
+      test_project: tests/Example.Tests/Example.Tests.csproj
+      presentation_project: src/Example.App/Example.App.csproj
+      coverage_include: '[Example.Domain]*%2c[Example.Application]*'
+      line_threshold: 80
+      branch_threshold: 80
+```
