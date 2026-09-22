@@ -1,0 +1,110 @@
+name: Reusable - .NET Installer Release
+
+on:
+  workflow_call:
+    inputs:
+      dotnet_version:
+        description: .NET SDK version
+        required: false
+        default: 10.0.x
+        type: string
+      app_project:
+        description: Executable project to publish
+        required: true
+        type: string
+      app_name:
+        description: Release and artifact display name
+        required: true
+        type: string
+      installer_iss_path:
+        description: Inno Setup script path
+        required: true
+        type: string
+
+jobs:
+  release:
+    name: Build installer and publish release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+      - name: Validate release tag
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ('${{ github.event_name }}' -ne 'push' -or '${{ github.ref }}' -notlike 'refs/tags/*') {
+            throw 'Installer releases must be invoked by a tag push.'
+          }
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notmatch '^v\d+\.\d+\.\d+\.\d+$') {
+            throw "Invalid release tag '$tag'. Expected vX.X.X.X."
+          }
+          "version=$($tag.Substring(1))" >> $env:GITHUB_OUTPUT
+      - name: Publish self-contained application
+        shell: pwsh
+        run: |
+          dotnet publish '${{ inputs.app_project }}' `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:Version=${{ steps.version.outputs.version }} `
+            -p:FileVersion=${{ steps.version.outputs.version }} `
+            -p:AssemblyVersion=${{ steps.version.outputs.version }} `
+            -o ./publish
+      - name: Build setup.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install innosetup -y --no-progress
+          $iss = '${{ inputs.installer_iss_path }}'
+          if (-not (Test-Path $iss)) { throw "Installer script not found: $iss" }
+          $publishDir = (Resolve-Path './publish').Path
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' `
+            "/DAppVersion=${{ steps.version.outputs.version }}" `
+            "/DPublishDir=$publishDir" `
+            $iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
+      - name: Stage release assets and checksums
+        id: assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem -Path . -Recurse -Filter setup.exe -File |
+            Where-Object { $_.FullName -notmatch '\\publish\\' } |
+            Select-Object -First 1
+          if (-not $setup) { throw 'setup.exe was not produced.' }
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          Copy-Item $setup.FullName release-assets/setup.exe -Force
+          $zip = "${{ inputs.app_name }}_v${{ steps.version.outputs.version }}_win-x64.zip"
+          Compress-Archive -Path './publish/*' -DestinationPath "release-assets/$zip" -Force
+          Push-Location release-assets
+          Get-ChildItem -File | Where-Object Name -ne 'SHA256SUMS.txt' | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content SHA256SUMS.txt
+          Pop-Location
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.app_name }}-v${{ steps.version.outputs.version }}
+          path: release-assets/*
+          if-no-files-found: error
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ inputs.app_name }} v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: release-assets/*
+          draft: false
+          prerelease: false
+          make_latest: true
+
