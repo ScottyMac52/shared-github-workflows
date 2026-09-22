@@ -1,0 +1,86 @@
+name: Reusable - .NET CI
+
+on:
+  workflow_call:
+    inputs:
+      dotnet_version:
+        description: .NET SDK version
+        required: false
+        default: 10.0.x
+        type: string
+      test_project:
+        description: Test project or solution to restore, format, build, and test
+        required: true
+        type: string
+      presentation_project:
+        description: Optional Windows presentation project to build
+        required: false
+        default: ''
+        type: string
+      coverage_include:
+        description: Coverlet include filter, URL-encoded when necessary
+        required: true
+        type: string
+      line_threshold:
+        description: Minimum line coverage required for every included assembly
+        required: false
+        default: 80
+        type: number
+      branch_threshold:
+        description: Minimum branch coverage required for every included assembly
+        required: false
+        default: 80
+        type: number
+      verify_format:
+        description: Verify dotnet format style produces no changes
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-coverage:
+    name: Build, test, and coverage gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+      - name: Restore
+        run: dotnet restore "${{ inputs.test_project }}"
+      - name: Verify formatting
+        if: ${{ inputs.verify_format }}
+        run: dotnet format style "${{ inputs.test_project }}" --verify-no-changes --no-restore --severity warn
+      - name: Build
+        run: dotnet build "${{ inputs.test_project }}" -c Release --no-restore
+      - name: Test and enforce independent line and branch gates
+        run: >-
+          dotnet test "${{ inputs.test_project }}" -c Release --no-build
+          /p:CollectCoverage=true
+          /p:CoverletOutputFormat=cobertura
+          /p:CoverletOutput=TestResults/coverage.cobertura.xml
+          /p:Threshold=${{ inputs.line_threshold }}%2c${{ inputs.branch_threshold }}
+          /p:ThresholdType=line%2cbranch
+          /p:ThresholdStat=minimum
+          "/p:Include=${{ inputs.coverage_include }}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage
+          path: '**/TestResults/coverage.cobertura.xml'
+          if-no-files-found: error
+
+  windows-presentation:
+    name: Build Windows presentation project
+    if: ${{ inputs.presentation_project != '' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+      - name: Build presentation project
+        run: dotnet build "${{ inputs.presentation_project }}" -c Release
