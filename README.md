@@ -121,6 +121,15 @@ Use `.github/workflows/reusable-dotnet-ci.yml` when a repository needs explicit 
 
 Coverage is evaluated with Coverlet's `minimum` statistic. `line_threshold` and `branch_threshold` are separate inputs, so an assembly must satisfy both gates independently; aggregate coverage cannot hide an under-tested layer.
 
+Every test run collects both Cobertura and OpenCover XML plus TRX test results.
+The `coverage` Actions artifact contains `dotnet-coverage/coverage.cobertura.xml`,
+`dotnet-coverage/coverage.opencover.xml`, and `dotnet-test-results/**/*.trx`.
+Upload runs even when tests or coverage gates fail, preserving available diagnostics.
+OpenCover includes method complexity and coverage for CRAP analysis; TRX supplies
+test outcomes, durations, and failure details. Callers can download this artifact in
+a dependent job with `if: always()` to publish HTML reports and a run summary.
+Failures before the test runner starts cannot produce coverage or test results.
+
 ```yaml
 jobs:
   dotnet:
