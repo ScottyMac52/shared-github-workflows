@@ -59,9 +59,11 @@ jobs:
       - name: Test and enforce independent line and branch gates
         run: >-
           dotnet test "${{ inputs.test_project }}" -c Release --no-build
+          --logger trx
+          --results-directory "${{ runner.temp }}/dotnet-test-results"
           /p:CollectCoverage=true
-          /p:CoverletOutputFormat=cobertura
-          /p:CoverletOutput=TestResults/coverage.cobertura.xml
+          /p:CoverletOutputFormat=cobertura%2copencover
+          "/p:CoverletOutput=${{ runner.temp }}/dotnet-coverage/coverage"
           /p:Threshold=${{ inputs.line_threshold }}%2c${{ inputs.branch_threshold }}
           /p:ThresholdType=line%2cbranch
           /p:ThresholdStat=minimum
@@ -70,7 +72,9 @@ jobs:
         if: always()
         with:
           name: coverage
-          path: '**/TestResults/coverage.cobertura.xml'
+          path: |
+            ${{ runner.temp }}/dotnet-coverage/*.xml
+            ${{ runner.temp }}/dotnet-test-results/**/*.trx
           if-no-files-found: error
 
   windows-presentation:
